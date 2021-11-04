@@ -1,14 +1,15 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bitmap_font::TextStyle;
 use embedded_graphics::{
     draw_target::{DrawTarget, DrawTargetExt},
     pixelcolor::BinaryColor,
-    prelude::{OriginDimensions, Point, Size},
+    prelude::{Point, Size},
     primitives::{Circle, Line, PrimitiveStyleBuilder, Rectangle, StyledDrawable},
     text::Text,
-    Drawable, Pixel,
+    Drawable,
 };
-use image::{ImageBuffer, Rgb, RgbImage};
+
+use crate::subpixel_image_buffer::SubpixelImageBuffer;
 
 fn main() -> Result<()> {
     for text_color in [BinaryColor::On, BinaryColor::Off] {
@@ -49,150 +50,175 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// If `false`, draw the image using whole pixels instead of subpixels. This can be useful to debug output.
-const USE_SUBPIXEL: bool = true;
+mod subpixel_image_buffer {
+    use anyhow::Context;
+    use embedded_graphics::{
+        draw_target::DrawTarget,
+        pixelcolor::BinaryColor,
+        prelude::{OriginDimensions, Size},
+        Pixel,
+    };
+    use image::{ImageBuffer, Rgb, RgbImage};
 
-struct SubpixelImageBuffer {
-    lit_pixel: Rgb<u8>,
-    buffer: RgbImage,
-}
+    /// A monochromatic buffer that will emit an image that is 1/3 of its reported width. It does so by treating subpixels as pixels.
+    pub struct SubpixelImageBuffer {
+        /// Pixel that contains the max value per channel we want to write out.
+        reference_pixel: Rgb<u8>,
 
-impl SubpixelImageBuffer {
-    pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            lit_pixel: perceived_brightness::evenly_lit_pixel(),
-            buffer: ImageBuffer::new(
-                if USE_SUBPIXEL {
-                    let extra = if width % 3 != 0 { 1 } else { 0 };
-                    width / 3 + extra
-                } else {
-                    width
-                },
-                height,
-            ),
+        /// The actual width is 1/3 (rounded up) of what this struct reports.
+        buffer: RgbImage,
+    }
+
+    impl SubpixelImageBuffer {
+        /// If `false`, draw the image using whole pixels instead of subpixels. This can be useful to debug output.
+        const USE_SUBPIXEL: bool = true;
+
+        /// Note: rounds up `width` to the nearest multiple of 3
+        pub fn new(width: u32, height: u32) -> Self {
+            Self {
+                reference_pixel: perceived_brightness::evenly_lit_pixel(),
+                buffer: ImageBuffer::new(
+                    if Self::USE_SUBPIXEL {
+                        let extra = if width % 3 != 0 { 1 } else { 0 };
+                        width / 3 + extra
+                    } else {
+                        width
+                    },
+                    height,
+                ),
+            }
         }
-    }
 
-    pub fn into_inner(self) -> RgbImage {
-        self.buffer
-    }
-}
-
-impl OriginDimensions for SubpixelImageBuffer {
-    fn size(&self) -> Size {
-        let (w, h) = self.buffer.dimensions();
-        Size {
-            width: if USE_SUBPIXEL { w * 3 } else { w },
-            height: h,
+        pub fn into_inner(self) -> RgbImage {
+            self.buffer
         }
-    }
-}
 
-impl DrawTarget for SubpixelImageBuffer {
-    type Color = BinaryColor;
-
-    type Error = anyhow::Error;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(pos, color) in pixels {
-            let x = u32::try_from(pos.x).context("x position was negative")?;
-            let y = u32::try_from(pos.y).context("y position was negative")?;
-
-            if USE_SUBPIXEL {
+        fn put_pixel(&mut self, x: u32, y: u32, val: f64) {
+            if Self::USE_SUBPIXEL {
                 let pixel = self.buffer.get_pixel_mut(x / 3, y);
-                let subpixel = pos.x as usize % 3;
+                let subpixel = x as usize % 3;
 
                 // Assume pixel geometry is RGB
                 // TODO: Do we need to adjust the brightness if multiple subpixels are lit?
-                pixel.0[subpixel] = match color {
-                    BinaryColor::Off => 0,
-                    BinaryColor::On => self.lit_pixel[subpixel],
-                };
+                pixel.0[subpixel] = (self.reference_pixel[subpixel] as f64 * val) as u8;
             } else {
                 self.buffer.put_pixel(
                     x,
                     y,
-                    match color {
-                        BinaryColor::Off => Rgb([0, 0, 0]),
-                        BinaryColor::On => self.lit_pixel,
-                    },
+                    Rgb([
+                        (self.reference_pixel[0] as f64 * val) as u8,
+                        (self.reference_pixel[1] as f64 * val) as u8,
+                        (self.reference_pixel[2] as f64 * val) as u8,
+                    ]),
                 )
             }
         }
-
-        Ok(())
-    }
-}
-
-mod perceived_brightness {
-    use image::Rgb;
-
-    // From https://alienryderflex.com/hsp.html
-    const R_COEFFICIENT: f64 = 0.299;
-    const G_COEFFICIENT: f64 = 0.587;
-    const B_COEFFICIENT: f64 = 0.114;
-
-    #[test]
-    fn coefficient_sanity() {
-        use assert_approx_eq::assert_approx_eq;
-
-        assert_approx_eq!(1.0, R_COEFFICIENT + G_COEFFICIENT + B_COEFFICIENT);
     }
 
-    fn perceived_brightness(color: [f64; 3]) -> f64 {
-        let r = color[0] as f64;
-        let g = color[1] as f64;
-        let b = color[2] as f64;
-        (R_COEFFICIENT * r.powi(2) + G_COEFFICIENT * g.powi(2) + B_COEFFICIENT * b.powi(2)).sqrt()
+    impl OriginDimensions for SubpixelImageBuffer {
+        fn size(&self) -> Size {
+            let (w, h) = self.buffer.dimensions();
+            Size {
+                width: if Self::USE_SUBPIXEL { w * 3 } else { w },
+                height: h,
+            }
+        }
     }
 
-    /// A color where each channel is approximately the same perceptual brightness.
-    ///
-    /// Should be a light purple.
-    pub fn evenly_lit_pixel() -> Rgb<u8> {
-        // The blue channel is the weakest, so we need to dim other channels to accommodate it
-        let desired_brightness = perceived_brightness([0.0, 0.0, 1.0]);
+    impl DrawTarget for SubpixelImageBuffer {
+        type Color = BinaryColor;
 
-        // Solve `perceived_brightness` for `r` and `g` when the other channels are 0.
-        let r = (desired_brightness.powi(2) / R_COEFFICIENT).sqrt();
-        let g = (desired_brightness.powi(2) / G_COEFFICIENT).sqrt();
+        type Error = anyhow::Error;
 
-        // Hand-wave-y gamma correction to make the colors look even a little more uniform. This probably is an issue with the perceptual brightness coefficients rather than actual color space issues?
-        // let r = r.powf(2.2);
-        // let g = g.powf(2.2);
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(pos, color) in pixels {
+                let x = u32::try_from(pos.x).context("x position was negative")?;
+                let y = u32::try_from(pos.y).context("y position was negative")?;
+                self.put_pixel(
+                    x,
+                    y,
+                    match color {
+                        BinaryColor::Off => 0.0,
+                        BinaryColor::On => 1.0,
+                    },
+                );
+            }
 
-        Rgb([(r * 255.0) as u8, (g * 255.0) as u8, 255])
+            Ok(())
+        }
     }
 
-    /// Test that the `evenly_lit_pixel` is indeed evenly lit,
-    #[test]
-    fn sanity() {
-        use assert_approx_eq::assert_approx_eq;
+    mod perceived_brightness {
+        use image::Rgb;
 
-        let max_brightness = perceived_brightness([0.0, 0.0, 1.0]);
-        let evenly_lit_pixel = evenly_lit_pixel();
+        // From https://alienryderflex.com/hsp.html
+        const R_COEFFICIENT: f64 = 0.299;
+        const G_COEFFICIENT: f64 = 0.587;
+        const B_COEFFICIENT: f64 = 0.114;
 
-        dbg!(evenly_lit_pixel);
+        #[test]
+        fn coefficient_sanity() {
+            use assert_approx_eq::assert_approx_eq;
 
-        let threshold = 0.002;
+            assert_approx_eq!(1.0, R_COEFFICIENT + G_COEFFICIENT + B_COEFFICIENT);
+        }
 
-        assert_approx_eq!(
-            perceived_brightness([evenly_lit_pixel[0] as f64 / 255.0, 0.0, 0.0]),
-            max_brightness,
-            threshold
-        );
-        assert_approx_eq!(
-            perceived_brightness([0.0, evenly_lit_pixel[1] as f64 / 255.0, 0.0]),
-            max_brightness,
-            threshold
-        );
-        assert_approx_eq!(
-            perceived_brightness([0.0, 0.0, evenly_lit_pixel[2] as f64 / 255.0]),
-            max_brightness,
-            threshold
-        );
+        fn perceived_brightness(color: [f64; 3]) -> f64 {
+            let r = color[0] as f64;
+            let g = color[1] as f64;
+            let b = color[2] as f64;
+            (R_COEFFICIENT * r.powi(2) + G_COEFFICIENT * g.powi(2) + B_COEFFICIENT * b.powi(2))
+                .sqrt()
+        }
+
+        /// A color where each channel is approximately the same perceptual brightness.
+        ///
+        /// Should be a light purple.
+        pub fn evenly_lit_pixel() -> Rgb<u8> {
+            // The blue channel is the weakest, so we need to dim other channels to accommodate it
+            let desired_brightness = perceived_brightness([0.0, 0.0, 1.0]);
+
+            // Solve `perceived_brightness` for `r` and `g` when the other channels are 0.
+            let r = (desired_brightness.powi(2) / R_COEFFICIENT).sqrt();
+            let g = (desired_brightness.powi(2) / G_COEFFICIENT).sqrt();
+
+            // Hand-wave-y gamma correction to make the colors look even a little more uniform. This probably is an issue with the perceptual brightness coefficients rather than actual color space issues?
+            // let r = r.powf(2.2);
+            // let g = g.powf(2.2);
+
+            Rgb([(r * 255.0) as u8, (g * 255.0) as u8, 255])
+        }
+
+        /// Test that the `evenly_lit_pixel` is indeed evenly lit,
+        #[test]
+        fn sanity() {
+            use assert_approx_eq::assert_approx_eq;
+
+            let max_brightness = perceived_brightness([0.0, 0.0, 1.0]);
+            let evenly_lit_pixel = evenly_lit_pixel();
+
+            dbg!(evenly_lit_pixel);
+
+            let threshold = 0.002;
+
+            assert_approx_eq!(
+                perceived_brightness([evenly_lit_pixel[0] as f64 / 255.0, 0.0, 0.0]),
+                max_brightness,
+                threshold
+            );
+            assert_approx_eq!(
+                perceived_brightness([0.0, evenly_lit_pixel[1] as f64 / 255.0, 0.0]),
+                max_brightness,
+                threshold
+            );
+            assert_approx_eq!(
+                perceived_brightness([0.0, 0.0, evenly_lit_pixel[2] as f64 / 255.0]),
+                max_brightness,
+                threshold
+            );
+        }
     }
 }

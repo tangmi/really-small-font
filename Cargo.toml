@@ -1,0 +1,13 @@
+[package]
+name = "really-small-font"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-graphics = "0.7.1"
+bitmap-font = "0.2.1"
+anyhow = "1.0.45"
+image = "0.23.14"
+
+[dev-dependencies]
+assert_approx_eq = "1.1.0"

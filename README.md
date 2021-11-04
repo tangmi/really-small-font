@@ -8,11 +8,14 @@ this is inspired by ken perlin's [tiny font](http://blog.kenperlin.com/?p=6804),
 
 note that this assumes no dpi scaling and an rgb subpixel geometry.
 
-| when the text is lit                        | when the background is lit                    |
-| ------------------------------------------- | --------------------------------------------- |
-| ![example-on](screenshots/example-on.png)   | ![example-off](screenshots/example-off.png)   |
-| ![physical-on](screenshots/physical-on.png) | ![physical-off](screenshots/physical-off.png) |
+|                      | when the text is lit                              | when the background is lit                          |
+| -------------------- | ------------------------------------------------- | --------------------------------------------------- |
+| output               | ![example-on](screenshots/example-on.png)         | ![example-off](screenshots/example-off.png)         |
+| simulated 3x         | ![example-big-on](screenshots/example-big-on.png) | ![example-big-off](screenshots/example-big-off.png) |
+| on my actual monitor | ![physical-on](screenshots/physical-on.png)       | ![physical-off](screenshots/physical-off.png)       |
 
 ## why purple?
 
 the color chosen is one where each of the individual channels have equal perceptual brightness.
+
+this might not be optimal since blue still seems pretty dark.

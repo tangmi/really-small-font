@@ -31,6 +31,46 @@ fn main() -> Result<()> {
         Line::new(Point::new(0, 0), Point::new(3, 3)).draw_styled(&thin_line, &mut display)?;
 
         {
+            // draw a many lines, which will turn into solid blocks of color. these should all have the same brightness.
+            let mut display = display.translated(Point::new(9, 40));
+            let mut i = 0;
+            for _ in 0..3 {
+                for _ in 0..5 {
+                    Line::new(Point::new(i, 0), Point::new(i, 6))
+                        .draw_styled(&thin_line, &mut display)?;
+                    // advance by 3 to keep the same subpixel
+                    i += 3;
+                }
+                // advance by 1 to switch to the next subpixel
+                i += 1;
+            }
+
+            // draw 3 two-pixel-wide lines at different offsets. these should all have the same thickness.
+            i += 12;
+            let med_line = PrimitiveStyleBuilder::new()
+                .stroke_width(2)
+                .stroke_color(text_color)
+                .build();
+            for _ in 0..3 {
+                Line::new(Point::new(i, 0), Point::new(i, 6))
+                    .draw_styled(&med_line, &mut display)?;
+                i += 7;
+            }
+
+            // do the same with a three-pixel-wide line. these should all have the same thickness.
+            i += 10;
+            let thick_line = PrimitiveStyleBuilder::new()
+                .stroke_width(3)
+                .stroke_color(text_color)
+                .build();
+            for _ in 0..3 {
+                Line::new(Point::new(i, 0), Point::new(i, 6))
+                    .draw_styled(&thick_line, &mut display)?;
+                i += 7;
+            }
+        }
+
+        {
             // draw a smiley
             let mut display = display.translated(Point::new(150, 20));
             Circle::new(Point::zero(), 15).draw_styled(&thin_line, &mut display)?;
@@ -40,6 +80,11 @@ fn main() -> Result<()> {
             let mut clipped = display.clipped(&Rectangle::new(Point::new(0, 8), Size::new(15, 6)));
             Circle::new(Point::new(4, 3), 7).draw_styled(&thin_line, &mut clipped)?;
         }
+
+        display.to_non_subpixel_image().save_with_format(
+            format!("screenshots/example-big-{:?}.png", text_color).to_ascii_lowercase(),
+            image::ImageFormat::Png,
+        )?;
 
         display.into_inner().save_with_format(
             format!("screenshots/example-{:?}.png", text_color).to_ascii_lowercase(),
@@ -70,22 +115,12 @@ mod subpixel_image_buffer {
     }
 
     impl SubpixelImageBuffer {
-        /// If `false`, draw the image using whole pixels instead of subpixels. This can be useful to debug output.
-        const USE_SUBPIXEL: bool = true;
-
         /// Note: rounds up `width` to the nearest multiple of 3
         pub fn new(width: u32, height: u32) -> Self {
+            let extra = if width % 3 != 0 { 1 } else { 0 };
             Self {
                 reference_pixel: perceived_brightness::evenly_lit_pixel(),
-                buffer: ImageBuffer::new(
-                    if Self::USE_SUBPIXEL {
-                        let extra = if width % 3 != 0 { 1 } else { 0 };
-                        width / 3 + extra
-                    } else {
-                        width
-                    },
-                    height,
-                ),
+                buffer: ImageBuffer::new(width / 3 + extra, height),
             }
         }
 
@@ -93,25 +128,39 @@ mod subpixel_image_buffer {
             self.buffer
         }
 
-        fn put_pixel(&mut self, x: u32, y: u32, val: f64) {
-            if Self::USE_SUBPIXEL {
-                let pixel = self.buffer.get_pixel_mut(x / 3, y);
-                let subpixel = x as usize % 3;
+        /// Draw the image using whole pixels instead of subpixels. This can be useful to debug output.
+        pub fn to_non_subpixel_image(&self) -> RgbImage {
+            let mut pixel_buffer: RgbImage =
+                ImageBuffer::new(self.buffer.width() * 3, self.buffer.height() * 3);
 
-                // Assume pixel geometry is RGB
-                // TODO: Do we need to adjust the brightness if multiple subpixels are lit?
-                pixel.0[subpixel] = (self.reference_pixel[subpixel] as f64 * val) as u8;
-            } else {
-                self.buffer.put_pixel(
-                    x,
-                    y,
-                    Rgb([
-                        (self.reference_pixel[0] as f64 * val) as u8,
-                        (self.reference_pixel[1] as f64 * val) as u8,
-                        (self.reference_pixel[2] as f64 * val) as u8,
-                    ]),
-                )
+            for (i, pixel) in self.buffer.pixels().enumerate() {
+                let x = (i as u32 % self.buffer.width()) * 3;
+                let y = (i as u32 / self.buffer.width()) * 3;
+
+                for y in y..y + 3 {
+                    for channel in 0..3 {
+                        if pixel.0[channel] != 0 {
+                            let mut output = Rgb([0, 0, 0]);
+                            output.0[channel] = pixel.0[channel];
+                            pixel_buffer.put_pixel(x + channel as u32, y, output);
+                        }
+                    }
+                }
             }
+
+            pixel_buffer
+        }
+
+        fn put_pixel(&mut self, x: u32, y: u32, val: f64) {
+            let pixel = self.buffer.get_pixel_mut(x / 3, y);
+            let subpixel = x as usize % 3;
+
+            // Assume pixel geometry is RGB
+            // TODO: Do we need to adjust the brightness if multiple subpixels are lit?
+            pixel.0[subpixel] = (self.reference_pixel[subpixel] as f64 * val) as u8;
+
+            // Hand-wave-y gamma correction to make the colors look even a little more uniform. This probably is an issue with the perceptual brightness coefficients rather than actual color space issues?
+            // pixel.0[subpixel] = ((pixel.0[subpixel] as f64 / 255.0).powf(1.43) * 255.0) as u8;
         }
     }
 
@@ -119,7 +168,7 @@ mod subpixel_image_buffer {
         fn size(&self) -> Size {
             let (w, h) = self.buffer.dimensions();
             Size {
-                width: if Self::USE_SUBPIXEL { w * 3 } else { w },
+                width: w * 3,
                 height: h,
             }
         }
@@ -184,10 +233,6 @@ mod subpixel_image_buffer {
             // Solve `perceived_brightness` for `r` and `g` when the other channels are 0.
             let r = (desired_brightness.powi(2) / R_COEFFICIENT).sqrt();
             let g = (desired_brightness.powi(2) / G_COEFFICIENT).sqrt();
-
-            // Hand-wave-y gamma correction to make the colors look even a little more uniform. This probably is an issue with the perceptual brightness coefficients rather than actual color space issues?
-            // let r = r.powf(2.2);
-            // let g = g.powf(2.2);
 
             Rgb([(r * 255.0) as u8, (g * 255.0) as u8, 255])
         }

@@ -157,19 +157,23 @@ mod subpixel_image_buffer {
 
             // Assume pixel geometry is RGB
             // TODO: Do we need to adjust the brightness if multiple subpixels are lit?
-            pixel.0[subpixel] = (self.reference_pixel[subpixel] as f64 * val) as u8;
+            let value_normalized = self.reference_pixel[subpixel] as f64 / 255.0 * val;
 
             // Hand-wave-y gamma correction to make the colors look even a little more uniform. This probably is an issue with the perceptual brightness coefficients rather than actual color space issues?
-            // pixel.0[subpixel] = ((pixel.0[subpixel] as f64 / 255.0).powf(1.43) * 255.0) as u8;
+            const GAMMA_PER_CHANNEL: [f64; 3] = [2.2, 2.0, 1.8]; // Generated from observing the output of the build script.
+            let value_normalized = value_normalized
+                .powf(1.0 / 2.2) // to linear
+                .powf(GAMMA_PER_CHANNEL[subpixel]); // to our custom gamma
+
+            pixel.0[subpixel] = (value_normalized * 255.0) as u8;
         }
     }
 
     impl OriginDimensions for SubpixelImageBuffer {
         fn size(&self) -> Size {
-            let (w, h) = self.buffer.dimensions();
             Size {
-                width: w * 3,
-                height: h,
+                width: self.buffer.width() * 3,
+                height: self.buffer.height(),
             }
         }
     }

@@ -11,3 +11,7 @@ image = "0.23.14"
 
 [dev-dependencies]
 assert_approx_eq = "1.1.0"
+
+[build-dependencies]
+embedded-graphics = "0.7.1"
+image = "0.23.14"
